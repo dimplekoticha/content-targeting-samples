@@ -1,3 +1,6 @@
-Bundle-SymbolicName: report.twitter
+Bundle-Name: Liferay Content Targeting Twitter Report
+Bundle-SymbolicName: com.liferay.content.targeting.report.twitter
 Bundle-Version: 1.0.0
-Web-ContextPath: /content-targeting-report-report.twitter
+Export-Package: org.twitter4j.*
+Web-ContextPath: /content-targeting-report-twitter
+-includeresource: @twitter4j-core-[0-9]*.jar

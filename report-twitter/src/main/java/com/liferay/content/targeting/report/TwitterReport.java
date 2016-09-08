@@ -1,17 +1,20 @@
 package com.liferay.content.targeting.report;
 
+import com.liferay.asset.kernel.service.AssetEntryLocalService;
+import com.liferay.asset.kernel.service.AssetTagLocalService;
+import com.liferay.content.targeting.analytics.service.AnalyticsEventLocalService;
 import com.liferay.content.targeting.api.model.BaseJSPReport;
 import com.liferay.content.targeting.api.model.Report;
+import com.liferay.content.targeting.model.Campaign;
 import com.liferay.content.targeting.model.ReportInstance;
-import com.liferay.content.targeting.model.UserSegment;
 import com.liferay.content.targeting.service.ReportInstanceLocalService;
-import com.liferay.portal.kernel.json.JSONException;
+import com.liferay.portal.kernel.exception.PortalException;
 import com.liferay.portal.kernel.json.JSONFactoryUtil;
 import com.liferay.portal.kernel.json.JSONObject;
 import com.liferay.portal.kernel.log.Log;
 import com.liferay.portal.kernel.log.LogFactoryUtil;
-import com.liferay.portal.kernel.util.GetterUtil;
 import com.liferay.portal.kernel.util.ParamUtil;
+import com.liferay.portal.kernel.workflow.WorkflowConstants;
 
 import java.util.Date;
 import java.util.Map;
@@ -26,6 +29,17 @@ import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
 
+import twitter4j.Query;
+import twitter4j.QueryResult;
+import twitter4j.Twitter;
+import twitter4j.TwitterException;
+import twitter4j.TwitterFactory;
+
+import twitter4j.conf.ConfigurationBuilder;
+
+/**
+ * @author Eduardo Garcia
+ */
 @Component(immediate = true, service = Report.class)
 public class TwitterReport extends BaseJSPReport {
 
@@ -43,7 +57,7 @@ public class TwitterReport extends BaseJSPReport {
 
 	@Override
 	public String getReportType() {
-		return UserSegment.class.getName();
+		return Campaign.class.getName();
 	}
 
 	@Override
@@ -58,13 +72,9 @@ public class TwitterReport extends BaseJSPReport {
 
 		JSONObject jsonObject = JSONFactoryUtil.createJSONObject();
 
-		String setting1 = ParamUtil.getString(portletRequest, "setting1");
+		String tagName = ParamUtil.getString(portletRequest, "tagName");
 
-		jsonObject.put("setting1", setting1);
-
-		String setting2 = ParamUtil.getString(portletRequest, "setting2");
-
-		jsonObject.put("setting2", setting2);
+		jsonObject.put("tagName", tagName);
 
 		return jsonObject.toString();
 	}
@@ -77,10 +87,7 @@ public class TwitterReport extends BaseJSPReport {
 	}
 
 	@Override
-	@Reference(
-		target = "(osgi.web.symbolicname=report.twitter)",
-		unbind = "-"
-	)
+	@Reference(target = "(osgi.web.symbolicname=com.liferay.content.targeting.report.twitter)", unbind = "-")
 	public void setServletContext(ServletContext servletContext) {
 		super.setServletContext(servletContext);
 	}
@@ -104,23 +111,39 @@ public class TwitterReport extends BaseJSPReport {
 	protected void populateContext(
 		ReportInstance reportInstance, Map<String, Object> context) {
 
-		String setting1 = null;
-		String setting2 = null;
+		String tagName = null;
+		long tagUsageCount = 0;
+		int tagViewCount = 0;
+		int tagPositiveCount = 0;
+		int tagNegativeCount = 0;
 
 		if (reportInstance != null) {
 			try {
 				JSONObject jsonObject = JSONFactoryUtil.createJSONObject(
 					reportInstance.getTypeSettings());
 
-				setting1 = jsonObject.getString("setting1");
-				setting2 = jsonObject.getString("setting2");
+				tagName = jsonObject.getString("tagName");
+
+				tagViewCount = _getTagViewCount(tagName);
+
+				tagUsageCount = _getTagUsageCount(
+					reportInstance.getCompanyId(), reportInstance.getGroupId(), 
+					reportInstance.getUserId(), tagName);
+
+				tagPositiveCount = _getTagTwitterCount("#" + tagName + " :)");
+
+				tagNegativeCount = _getTagTwitterCount("#" + tagName + " :(");
 			}
-			catch (JSONException jsone) {
+			catch (Exception e) {
+				_log.error(e);
 			}
 		}
 
-		context.put("setting1", setting1);
-		context.put("setting2", setting2);
+		context.put("tagName", tagName);
+		context.put("tagNegativeCount", tagNegativeCount);
+		context.put("tagPositiveCount", tagPositiveCount);
+		context.put("tagUsageCount", tagUsageCount);
+		context.put("tagViewCount", tagViewCount);
 	}
 
 	@Override
@@ -130,9 +153,100 @@ public class TwitterReport extends BaseJSPReport {
 		populateContext(reportInstance, context);
 	}
 
-	private static final Log _log = LogFactoryUtil.getLog(
-		TwitterReport.class);
+	@Reference(unbind = "-")
+	protected void setAnalyticsEventLocalService(
+		AnalyticsEventLocalService analyticsEventLocalService) {
 
+		_analyticsEventLocalService = analyticsEventLocalService;
+	}
+
+	@Reference(unbind = "-")
+	protected void setAssetEntryLocalService(
+		AssetEntryLocalService assetEntryLocalService) {
+
+		_assetEntryLocalService = assetEntryLocalService;
+	}
+	
+	@Reference(unbind = "-")
+	protected void setAssetTagLocalService(
+		AssetTagLocalService assetTagLocalService) {
+
+		_assetTagLocalService = assetTagLocalService;
+	}
+
+	private int _getTagTwitterCount(String tagSearchQuery) {
+		int count = 0;
+
+		ConfigurationBuilder cb = new ConfigurationBuilder();
+
+		cb.setDebugEnabled(true);
+		cb.setOAuthConsumerKey(_CONSUMER_KEY);
+		cb.setOAuthConsumerSecret(_CONSUMER_SECRET);
+		cb.setOAuthAccessToken(_ACCESS_KEY);
+		cb.setOAuthAccessTokenSecret(_ACCESS_SECRET);
+
+		try {
+			TwitterFactory twitterFactory = new TwitterFactory(cb.build());
+
+			Twitter twitter = twitterFactory.getInstance();
+
+			Query query = new Query(tagSearchQuery);
+			
+			query.setCount(100);
+
+			QueryResult result = twitter.search(query);
+			
+			count = result.getTweets().size();
+		}
+		catch (TwitterException te) {
+			_log.error("Cannot retrieve data from Twitter");
+		}
+
+		return count;
+	}
+
+	private long _getTagUsageCount(
+		long companyId, long groupId, long userId, String tagName) {
+		
+		if (_assetTagLocalService.fetchTag(groupId, tagName) == null) {
+			return 0;
+		}
+
+		int[] statuses = new int[] {
+			WorkflowConstants.STATUS_APPROVED, WorkflowConstants.STATUS_PENDING,
+			WorkflowConstants.STATUS_SCHEDULED
+		};
+
+		return _assetEntryLocalService.searchCount(
+			companyId, null, userId, null, 0, null, null, null, null, tagName,
+			true, true, statuses, false);
+	}
+
+	private int _getTagViewCount(String tagName) {
+		try {
+			return _analyticsEventLocalService.getAnalyticsEventsCount(
+				tagName, "view-tag", new Date(0));
+		}
+		catch (PortalException pe) {
+			_log.error(pe);
+
+			return 0;
+		}
+	}
+
+	private static final String _ACCESS_KEY = "";
+
+	private static final String _ACCESS_SECRET = "";
+
+	private static final String _CONSUMER_KEY = "";
+
+	private static final String _CONSUMER_SECRET = "";
+
+	private static final Log _log = LogFactoryUtil.getLog(TwitterReport.class);
+
+	private AnalyticsEventLocalService _analyticsEventLocalService;
+	private AssetEntryLocalService _assetEntryLocalService;
+	private AssetTagLocalService _assetTagLocalService;
 	private ReportInstanceLocalService _reportInstanceLocalService;
 
 }
