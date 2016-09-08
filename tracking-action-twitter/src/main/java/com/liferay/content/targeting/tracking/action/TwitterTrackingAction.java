@@ -1,12 +1,21 @@
 package com.liferay.content.targeting.tracking.action;
 
+import com.liferay.asset.kernel.model.AssetTag;
+import com.liferay.asset.kernel.service.AssetTagLocalService;
+import com.liferay.asset.kernel.service.AssetTagService;
 import com.liferay.content.targeting.api.model.BaseJSPTrackingAction;
 import com.liferay.content.targeting.api.model.TrackingAction;
 import com.liferay.content.targeting.exception.InvalidTrackingActionException;
 import com.liferay.content.targeting.model.TrackingActionInstance;
+import com.liferay.content.targeting.util.WebKeys;
+import com.liferay.portal.kernel.exception.PortalException;
 import com.liferay.portal.kernel.language.LanguageUtil;
+import com.liferay.portal.kernel.service.ServiceContext;
+import com.liferay.portal.kernel.service.ServiceContextFactory;
+import com.liferay.portal.kernel.theme.ThemeDisplay;
 import com.liferay.portal.kernel.util.ListUtil;
 import com.liferay.portal.kernel.util.StringPool;
+import com.liferay.portal.kernel.util.Validator;
 
 import java.util.List;
 import java.util.Locale;
@@ -22,6 +31,9 @@ import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.Deactivate;
 import org.osgi.service.component.annotations.Reference;
 
+/**
+ * @author Eduardo Garcia
+ */
 @Component(immediate = true, service = TrackingAction.class)
 public class TwitterTrackingAction extends BaseJSPTrackingAction {
 
@@ -58,17 +70,42 @@ public class TwitterTrackingAction extends BaseJSPTrackingAction {
 
 	@Override
 	public String processTrackingAction(
-			PortletRequest portletRequest, PortletResponse portletResponse,
-			String id, Map<String, String> values)
+			PortletRequest request, PortletResponse response, String id,
+			Map<String, String> values)
 		throws InvalidTrackingActionException {
 
-		return null;
+		String elementId = values.get("elementId");
+
+		if (Validator.isNull(elementId)) {
+			return elementId;
+		}
+
+		ThemeDisplay themeDisplay = (ThemeDisplay)request.getAttribute(
+			WebKeys.THEME_DISPLAY);
+
+		AssetTag tag = _assetTagLocalService.fetchTag(
+			themeDisplay.getScopeGroupId(), elementId);
+
+		if (tag == null) {
+			try {
+				ServiceContext serviceContext =
+					ServiceContextFactory.getInstance(
+						AssetTag.class.getName(), request);
+
+				_assetTagService.addTag(
+					themeDisplay.getScopeGroupId(), elementId, serviceContext);
+			}
+			catch (PortalException pe) {
+				throw new InvalidTrackingActionException();
+			}
+		}
+
+		return elementId;
 	}
 
 	@Override
 	@Reference(
-		target = "(osgi.web.symbolicname=tracking.action.twitter)",
-		unbind = "-"
+		target = "(osgi.web.symbolicname=com.liferay.content.targeting.tracking.action.twitter)", unbind = "-"
 	)
 	public void setServletContext(ServletContext servletContext) {
 		super.setServletContext(servletContext);
@@ -100,6 +137,21 @@ public class TwitterTrackingAction extends BaseJSPTrackingAction {
 		context.put("eventTypes", getEventTypes());
 	}
 
-	private static final String[] _EVENT_TYPES = {"click"};
+	@Reference(unbind = "-")
+	protected void setAssetTagLocalService(
+		AssetTagLocalService assetTagLocalService) {
+
+		_assetTagLocalService = assetTagLocalService;
+	}
+
+	@Reference(unbind = "-")
+	protected void setAssetTagService(AssetTagService assetTagService) {
+		_assetTagService = assetTagService;
+	}
+
+	private static final String[] _EVENT_TYPES = {"view-tag"};
+
+	private AssetTagLocalService _assetTagLocalService;
+	private AssetTagService _assetTagService;
 
 }
